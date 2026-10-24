@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tilt Dodge</title>
+<style>
+:root{--bg:#f4f1ea;--fg:#1d1b17;--mut:#6b665c;--card:#fff;--acc:#d9531e;--ok:#1f8f5f;--cv:#fbfaf6;--rock:#8a8070;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15130f;--fg:#f2eee4;--mut:#a39d8e;--card:#221f19;--acc:#ff7a45;--ok:#47c88f;--cv:#1b1812;--rock:#9c917c}}
+:root[data-theme="dark"]{--bg:#15130f;--fg:#f2eee4;--mut:#a39d8e;--card:#221f19;--acc:#ff7a45;--ok:#47c88f;--cv:#1b1812;--rock:#9c917c}
+*{box-sizing:border-box}
+html,body{min-height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px}
+.card{background:var(--card);border-radius:16px;padding:24px;max-width:420px;width:100%}
+h1{margin:0 0 8px;font-size:26px}
+p{color:var(--mut);margin:0 0 16px}
+button{font:inherit;font-weight:600;border:0;border-radius:12px;padding:16px 20px;width:100%;margin-top:10px;background:var(--acc);color:#fff;cursor:pointer}
+button.alt{background:transparent;color:var(--fg);border:2px solid var(--mut)}
+button.sm{width:auto;padding:8px 14px;margin:0 4px;font-size:14px}
+button.sel{outline:3px solid var(--fg)}
+input{font:inherit;width:100%;padding:14px;border-radius:12px;border:2px solid var(--mut);background:var(--bg);color:var(--fg);text-align:center;text-transform:uppercase;letter-spacing:4px;margin-top:10px}
+.hide{display:none!important}
+#game{flex-direction:column;gap:10px;width:100%;align-items:center}
+canvas{background:var(--cv);border-radius:12px;max-height:74vh;max-width:100%;aspect-ratio:2/3;height:auto;width:min(480px,100%)}
+#join{display:flex;gap:14px;align-items:center;background:var(--card);border-radius:12px;padding:10px 14px;text-align:left;font-size:14px;color:var(--mut)}
+#join b{color:var(--fg);letter-spacing:3px;font-size:20px}
+#qr img{width:96px;height:96px;display:block;border-radius:6px;background:#fff}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--mut);margin-right:6px}
+.dot.on{background:var(--ok)}
+#bar{height:14px;background:var(--bg);border-radius:7px;position:relative;margin:16px 0}
+#knob{position:absolute;top:-3px;width:20px;height:20px;border-radius:50%;background:var(--acc);left:50%;transform:translateX(-50%)}
+#me{border-radius:12px;padding:14px;margin:12px 0;font-weight:700;color:#111;background:var(--bg)}
+.err{color:#d33;font-size:14px;margin-top:10px}
+</style>
+</head>
+<body>
+
+<div class="card" id="pick">
+  <h1>Tilt Dodge</h1>
+  <p>Party game: one big screen, up to 8 phones. Tilt to steer, shove each other, last one standing (or most coins) wins.</p>
+  <button id="pickGame">Host a game (computer)</button>
+  <input id="code" maxlength="4" placeholder="CODE" autocomplete="off">
+  <button class="alt" id="pickPad">Join with code (phone)</button>
+  <div class="err hide" id="perr"></div>
+</div>
+
+<div class="card hide" id="pad">
+  <h1>Controller</h1>
+  <div id="me">Connecting…</div>
+  <p>Hold your phone upright. Tilt left and right to steer.</p>
+  <button id="enable">Enable motion</button>
+  <div id="bar"><div id="knob"></div></div>
+  <div id="padmsg" class="err hide"></div>
+  <button id="startBtn" class="hide">Start / Restart round</button>
+  <button id="recenter" class="alt hide">Recenter (hold how you like, then tap)</button>
+  <p style="margin-top:12px;font-size:14px"><span class="dot" id="pdot"></span><span id="pstat">Connecting…</span></p>
+</div>
+
+<div id="game" class="hide" style="display:flex">
+  <canvas id="cv" width="480" height="720"></canvas>
+  <div>
+    <button class="sm sel" id="m1">Last standing</button>
+    <button class="sm alt" id="m2">Coin rush</button>
+  </div>
+  <div id="join">
+    <div id="qr"></div>
+    <div>Phones: scan, or open<br><span id="joinurl"></span><br>Code <b id="joincode">----</b></div>
+  </div>
+  <div style="font-size:14px;color:var(--mut)"><span class="dot" id="gdot"></span><span id="gstat">Starting…</span></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(function(){
+  var $ = function(id){return document.getElementById(id)};
+  var PREFIX = "tiltdodge-";
+  var COLORS = ["#e6492d","#2d8fe6","#2dbd6e","#e6b42d","#a14de0","#e66fb0","#2dd3d3","#f08a2d"];
+  function show(id){ ["pick","pad","game"].forEach(function(x){ $(x).classList.toggle("hide", x!==id); }); }
+  function perr(m){ var e=$("perr"); e.textContent=m; e.classList.remove("hide"); }
+  if (typeof Peer === "undefined") perr("Couldn’t load the networking library. Check your internet connection.");
+
+  var urlCode = (new URLSearchParams(location.search).get("join") || "").toUpperCase().slice(0,4);
+  $("pickGame").onclick = function(){ show("game"); startGame(); };
+  $("pickPad").onclick = function(){
+    var c = $("code").value.trim().toUpperCase();
+    if (c.length !== 4) return perr("Enter the 4-letter code shown on the game screen.");
+    startPad(c);
+  };
+  if (urlCode.length === 4) startPad(urlCode);
+
+  // ================= CONTROLLER =================
+  function startPad(code){
+    show("pad");
+    var tilt = 0, conn = null, goCount = 0, gotOrient = false, peer, base = 0, rawG = 0;
+    function setMe(txt, color){ var m=$("me"); m.textContent=txt; m.style.background=color||"var(--bg)"; m.style.color=color?"#111":"var(--fg)"; }
+    function status(on, txt){ $("pdot").classList.toggle("on", on); $("pstat").textContent = txt; }
+    try { peer = new Peer(); } catch(e){ setMe("Networking unavailable"); return; }
+    peer.on("error", function(e){ status(false, "Can’t reach game (" + (e.type||"error") + "). Check the code and Wi‑Fi."); setMe("Not connected"); });
+    peer.on("open", function(){
+      conn = peer.connect(PREFIX + code, {reliable:true});
+      conn.on("open", function(){ status(true, "Connected to game " + code); setMe("Joining…"); });
+      conn.on("close", function(){ status(false, "Disconnected"); setMe("Disconnected"); });
+      conn.on("data", function(m){
+        if (m && m.t === "h") { try { navigator.vibrate && navigator.vibrate(180); } catch(x){} return; }
+        if (!m || m.t !== "s") return;
+        var label = "You are P" + (m.i+1) + (m.a ? "" : " (out)");
+        if (m.m === 2) label += " · " + m.c + " coin" + (m.c===1?"":"s");
+        setMe(label, COLORS[m.i % COLORS.length]);
+      });
+    });
+    setInterval(function(){ if (conn && conn.open) conn.send({t:"in", tilt:Math.round(tilt*100)/100}); }, 33);
+    $("startBtn").onclick = function(){ if (conn && conn.open) conn.send({t:"go"}); };
+    function onOrient(e){
+      if (e.gamma == null) return;
+      gotOrient = true; rawG = e.gamma;
+      tilt = Math.max(-35, Math.min(35, e.gamma - base))/35;
+      $("knob").style.left = (50 + tilt*48) + "%";
+    }
+    $("enable").onclick = function(){
+      var msg = $("padmsg");
+      function ok(){
+        addEventListener("deviceorientation", onOrient);
+        $("enable").classList.add("hide"); $("startBtn").classList.remove("hide"); $("recenter").classList.remove("hide"); $("recenter").onclick = function(){ base = rawG; };
+        setTimeout(function(){ if (!gotOrient) { msg.textContent="No motion data. Make sure this page is opened over HTTPS in Safari/Chrome and motion access is allowed."; msg.classList.remove("hide"); } }, 2500);
+      }
+      try {
+        if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+          DeviceOrientationEvent.requestPermission().then(function(s){
+            if (s === "granted") ok(); else { msg.textContent="Motion permission denied. Allow it in Safari settings and reload."; msg.classList.remove("hide"); }
+          }).catch(function(){ msg.textContent="Couldn’t get motion permission."; msg.classList.remove("hide"); });
+        } else ok();
+      } catch(e){ msg.textContent="Motion sensors aren’t available."; msg.classList.remove("hide"); }
+    };
+  }
+
+  // ================= GAME (host) =================
+  function startGame(){
+    var cv = $("cv"), ctx = cv.getContext("2d");
+    var W = cv.width, H = cv.height, PW = 40, PH = 26, PY = H - 60, COIN_ROUND = 45;
+    var css = function(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#888"; };
+    var keys = {left:false, right:false};
+    var state = "ready", mode = 1, rocks = [], coins = [], t = 0, spawn = 0, cspawn = 0, banner = "", parts = [], shake = 0, cd = 0, scroll = 0, pspawn = 0;
+    var slots = {}, nextIdx = 0, KBD = "kbd";
+
+    // ---- networking ----
+    var peer, code;
+    function makeCode(){ var a="ABCDEFGHJKLMNPQRSTUVWXYZ", s=""; for (var i=0;i<4;i++) s+=a[Math.floor(Math.random()*a.length)]; return s; }
+    function openPeer(){
+      code = makeCode();
+      peer = new Peer(PREFIX + code);
+      peer.on("open", function(){
+        $("joincode").textContent = code;
+        var url = location.origin + location.pathname + "?join=" + code;
+        $("joinurl").textContent = location.host + location.pathname;
+        try { var qr = qrcode(0,"M"); qr.addData(url); qr.make(); $("qr").innerHTML = qr.createImgTag(4,4); } catch(e){ $("qr").textContent = ""; }
+        $("gstat").textContent = "Waiting for phones… (arrow keys also work)";
+      });
+      peer.on("error", function(e){
+        if (e.type === "unavailable-id") { try{peer.destroy();}catch(x){} openPeer(); }
+        else $("gstat").textContent = "Network issue: " + (e.type||"error") + " (keyboard still works)";
+      });
+      peer.on("connection", function(conn){
+        var id = conn.peer;
+        conn.on("open", function(){
+          delete slots[KBD];
+          if (Object.keys(slots).length >= 8) { conn.close(); return; }
+          slots[id] = {i:nextIdx++, x:W/2, kx:0, alive:false, wins:0, coins:0, stun:0, out:0, tilt:0, conn:conn};
+        });
+        conn.on("data", function(m){
+          var s = slots[id]; if (!s || !m) return;
+          if (m.t === "in" && typeof m.tilt === "number") s.tilt = Math.max(-1, Math.min(1, m.tilt));
+          if (m.t === "go") begin();
+        });
+        conn.on("close", function(){ delete slots[id]; });
+        conn.on("error", function(){ delete slots[id]; });
+      });
+    }
+    if (typeof Peer !== "undefined") openPeer(); else $("gstat").textContent = "Networking library not loaded (keyboard still works)";
+
+    setInterval(function(){
+      list().forEach(function(s){
+        if (s.conn && s.conn.open) s.conn.send({t:"s", i:s.i, a:s.alive?1:0, c:s.coins, m:mode});
+      });
+      var n = list().filter(function(z){return !z.kbd}).length;
+      $("gdot").classList.toggle("on", n > 0);
+      if (peer && peer.open) $("gstat").textContent = n ? n + " phone" + (n>1?"s":"") + " connected" : "Waiting for phones… (arrow keys also work)";
+    }, 250);
+
+    // ---- input / modes ----
+    addEventListener("keydown", function(e){
+      if (e.key==="ArrowLeft"||e.key==="a") keys.left = true;
+      if (e.key==="ArrowRight"||e.key==="d") keys.right = true;
+      if (e.key===" "||e.key==="Enter") begin();
+    });
+    addEventListener("keyup", function(e){
+      if (e.key==="ArrowLeft"||e.key==="a") keys.left = false;
+      if (e.key==="ArrowRight"||e.key==="d") keys.right = false;
+    });
+    cv.addEventListener("click", begin);
+    function setMode(m){ if (state==="playing") return; mode = m; $("m1").className="sm "+(m===1?"sel":"alt"); $("m2").className="sm "+(m===2?"sel":"alt"); }
+    $("m1").onclick = function(){ setMode(1); };
+    $("m2").onclick = function(){ setMode(2); };
+
+    function list(){ return Object.keys(slots).map(function(k){return slots[k]}).sort(function(a,b){return a.i-b.i}); }
+    function begin(){
+      if (state === "playing" || state === "count") return;
+      if (!Object.keys(slots).length) slots[KBD] = {i:nextIdx++, x:W/2, kx:0, alive:true, wins:0, coins:0, stun:0, out:0, tilt:0, kbd:true};
+      var all = list(), n = all.length;
+      all.forEach(function(s,k){ s.alive = true; s.x = W*(k+1)/(n+1); s.kx = 0; s.coins = 0; s.stun = 0; s.out = 0; s.shield = false; });
+      rocks = []; coins = []; t = 0; spawn = 0; cspawn = 1; banner = ""; state = "count"; cd = 3; pspawn = 6; parts = [];
+    }
+    function colorOf(s){ return COLORS[s.i % COLORS.length]; }
+    var AC = null;
+    function beep(f,d,ty,v){ try { AC = AC || new (window.AudioContext||window.webkitAudioContext)(); var o=AC.createOscillator(), g=AC.createGain(); o.type=ty||"square"; o.frequency.value=f; g.gain.value=v||0.05; g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime+d); o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime+d); } catch(e){} }
+    function burst(x,y,col,n){ for (var i=0;i<n;i++){ var a=Math.random()*6.28, sp=60+Math.random()*220; parts.push({x:x,y:y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,l:0.6+Math.random()*0.5,c:col}); } }
+    function hit(s){ burst(s.x,PY,colorOf(s),18); shake=0.35; beep(120,0.25,"sawtooth",0.07); if (s.conn && s.conn.open) s.conn.send({t:"h"}); }
+
+    // ---- loop ----
+    var last = performance.now();
+    function frame(now){
+      var dt = Math.min(0.05, (now-last)/1000); last = now;
+      var pl = list();
+
+      if (state === "count") { var pc = Math.ceil(cd); cd -= dt; if (cd > 0 && Math.ceil(cd) !== pc) beep(440,0.1); if (cd <= 0) { state = "playing"; beep(880,0.2); } }
+      scroll = (scroll + 260*dt) % H;
+      if (shake > 0) shake -= dt;
+      if (state === "playing") {
+        t += dt;
+        pl.forEach(function(s){
+          if (!s.alive) return;
+          var st = s.kbd ? (keys.left ? -1 : keys.right ? 1 : 0) : s.tilt;
+          if (!s.kbd && (keys.left || keys.right)) st = keys.left ? -1 : 1;
+          if (s.stun > 0) { s.stun -= dt; st = 0; }
+          s.x += (st*520 + s.kx)*dt;
+          s.kx -= s.kx*Math.min(1, dt*5);
+        });
+        // shove
+        for (var a=0;a<pl.length;a++) for (var b=a+1;b<pl.length;b++){
+          var p = pl[a], q = pl[b];
+          if (!p.alive || !q.alive) continue;
+          var d = q.x - p.x, ov = PW - Math.abs(d);
+          if (ov > 0) {
+            var dir = d >= 0 ? 1 : -1;
+            p.x -= dir*ov/2; q.x += dir*ov/2;
+            p.kx = Math.max(-650, Math.min(650, p.kx - dir*2800*dt));
+            q.kx = Math.max(-650, Math.min(650, q.kx + dir*2800*dt));
+          }
+        }
+        pl.forEach(function(s){
+          if (s.x < PW/2) { s.x = PW/2; s.kx = Math.max(0, s.kx); }
+          if (s.x > W-PW/2) { s.x = W-PW/2; s.kx = Math.min(0, s.kx); }
+        });
+        // spawns
+        spawn -= dt;
+        var rate = Math.max(0.2, 0.9 - t*0.015) / Math.sqrt(Math.max(1, pl.length));
+        if (spawn <= 0) {
+          spawn = rate;
+          var sz = 26 + Math.random()*34;
+          rocks.push({x: sz/2 + Math.random()*(W-sz), y:-sz, s:sz, v:200 + Math.random()*80 + t*7, rot:Math.random()*6, vr:(Math.random()-0.5)*3});
+        }
+        if (mode === 2) {
+          cspawn -= dt;
+          if (cspawn <= 0) { cspawn = 0.45/Math.sqrt(Math.max(1,pl.length)); coins.push({x:20+Math.random()*(W-40), y:-12, v:170+Math.random()*60, k:"coin"}); }
+        }
+        if (mode === 1) { pspawn -= dt; if (pspawn <= 0) { pspawn = 9 + Math.random()*5; coins.push({x:20+Math.random()*(W-40), y:-12, v:150, k:"shield"}); } }
+        // rocks
+        for (var i=rocks.length-1;i>=0;i--){
+          var r = rocks[i]; r.y += r.v*dt; r.rot += r.vr*dt;
+          if (r.y - r.s > H) { rocks.splice(i,1); continue; }
+          for (var k=0;k<pl.length;k++){
+            var s = pl[k];
+            if (!s.alive || s.stun > 0) continue;
+            if (Math.abs(r.x-s.x) < (r.s+PW)/2 - 6 && Math.abs(r.y-PY) < (r.s+PH)/2 - 6) {
+              if (s.shield) { s.shield = false; rocks.splice(i,1); burst(r.x,r.y,"#4fd8ff",14); beep(660,0.15,"triangle"); break; }
+              if (mode === 1) { s.alive = false; s.out = t; hit(s); }
+              else { s.coins = Math.max(0, s.coins-3); s.stun = 1; rocks.splice(i,1); hit(s); break; }
+            }
+          }
+        }
+        // coins
+        for (var j=coins.length-1;j>=0;j--){
+          var c = coins[j]; c.y += c.v*dt;
+          if (c.y > H+20) { coins.splice(j,1); continue; }
+          for (var m=0;m<pl.length;m++){
+            var z = pl[m];
+            if (z.alive && Math.abs(c.x-z.x) < PW/2+12 && Math.abs(c.y-PY) < PH/2+14) {
+              if (c.k === "shield") { z.shield = true; beep(520,0.15,"triangle"); burst(c.x,c.y,"#4fd8ff",10); }
+              else { z.coins++; beep(990,0.07,"square",0.04); burst(c.x,c.y,"#f2b81c",6); }
+              coins.splice(j,1); break; }
+          }
+        }
+        // end conditions
+        var alive = pl.filter(function(s){return s.alive}), multi = pl.length > 1, done = false;
+        if (mode === 1) {
+          if ((multi && alive.length <= 1) || (!multi && alive.length === 0)) {
+            done = true;
+            var w = alive[0] || pl.slice().sort(function(x,y){return y.out-x.out})[0];
+            if (multi && w) { w.wins++; banner = "P"+(w.i+1)+" wins!"; } else banner = "Survived "+t.toFixed(1)+"s";
+          }
+        } else if (t >= COIN_ROUND) {
+          done = true;
+          var top = Math.max.apply(null, pl.map(function(s){return s.coins}));
+          var ws = pl.filter(function(s){return s.coins === top});
+          if (ws.length === 1 && multi) { ws[0].wins++; banner = "P"+(ws[0].i+1)+" wins with "+top+"!"; }
+          else banner = multi ? "Tie at "+top+" coins!" : "You got "+top+" coins";
+        }
+        if (done) { state = "over"; beep(660,0.3,"triangle"); for (var q2=0;q2<5;q2++) burst(Math.random()*W, H/3, COLORS[q2%8], 14); }
+      }
+
+      for (var pi=parts.length-1; pi>=0; pi--){ var pt=parts[pi]; pt.x+=pt.vx*dt; pt.y+=pt.vy*dt; pt.vy+=300*dt; pt.l-=dt; if (pt.l<=0) parts.splice(pi,1); }
+      // draw
+      ctx.clearRect(0,0,W,H);
+      ctx.save();
+      if (shake > 0) ctx.translate((Math.random()-0.5)*40*shake, (Math.random()-0.5)*40*shake);
+      ctx.fillStyle = css("--mut"); ctx.globalAlpha = 0.12;
+      for (var bl=0; bl<8; bl++) ctx.fillRect(30+bl*60, (scroll + bl*97) % H, 3, 40);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = css("--rock");
+      rocks.forEach(function(r){ ctx.save(); ctx.translate(r.x,r.y); ctx.rotate(r.rot); ctx.fillRect(-r.s/2,-r.s/2,r.s,r.s); ctx.restore(); });
+      coins.forEach(function(c){
+        if (c.k === "shield") { ctx.strokeStyle="#4fd8ff"; ctx.lineWidth=4; ctx.beginPath(); ctx.arc(c.x,c.y,12,0,7); ctx.stroke(); }
+        else { ctx.fillStyle="#f2b81c"; ctx.beginPath(); ctx.arc(c.x,c.y,11,0,7); ctx.fill(); }
+      });
+      pl.forEach(function(s){
+        if (state === "playing" && !s.alive) return;
+        var flick = s.stun > 0 && Math.floor(now/80)%2 === 0;
+        ctx.globalAlpha = flick ? 0.3 : (state==="playing" || s.alive) ? 1 : 0.4;
+        ctx.fillStyle = colorOf(s);
+        ctx.beginPath();
+        ctx.moveTo(s.x, PY-PH/2-6); ctx.lineTo(s.x+PW/2, PY+PH/2); ctx.lineTo(s.x-PW/2, PY+PH/2); ctx.closePath(); ctx.fill();
+        if (s.shield && s.alive) { ctx.strokeStyle="#4fd8ff"; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(s.x,PY,PW/2+4,0,7); ctx.stroke(); }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = css("--fg"); ctx.font = "600 13px system-ui, sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("P"+(s.i+1), s.x, PY+PH/2+16);
+      });
+      parts.forEach(function(p){ ctx.globalAlpha=Math.max(0,Math.min(1,p.l*2)); ctx.fillStyle=p.c; ctx.fillRect(p.x-3,p.y-3,6,6); });
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      ctx.fillStyle = css("--fg"); ctx.textAlign = "center"; ctx.font = "600 22px system-ui, sans-serif";
+      ctx.fillText(mode===2 ? Math.max(0, COIN_ROUND-t).toFixed(0)+"s" : t.toFixed(1)+"s", W/2, 34);
+      ctx.font = "600 13px system-ui, sans-serif"; ctx.textAlign = "left";
+      pl.forEach(function(s,k){
+        ctx.fillStyle = colorOf(s); ctx.fillRect(12, 52 + k*18 - 10, 10, 10);
+        ctx.fillStyle = css("--fg");
+        ctx.fillText("P"+(s.i+1)+"  "+s.wins+" win"+(s.wins===1?"":"s")+(mode===2 ? "  ·  "+s.coins+" coins" : ""), 28, 52 + k*18);
+      });
+      if (state === "count") { ctx.textAlign="center"; ctx.fillStyle=css("--fg"); ctx.font="700 120px system-ui, sans-serif"; ctx.fillText(Math.ceil(cd), W/2, H/2); }
+      else if (state !== "playing") {
+        ctx.textAlign = "center"; ctx.fillStyle = css("--fg");
+        ctx.font = "700 32px system-ui, sans-serif";
+        ctx.fillText(state==="over" ? banner : "Tilt Dodge", W/2, H/2 - 30);
+        ctx.font = "16px system-ui, sans-serif";
+        ctx.fillText(mode===1 ? "Last standing wins · shove, grab shields" : "Most coins in "+COIN_ROUND+"s · rocks cost 3 coins", W/2, H/2 - 4);
+        ctx.fillText("Anyone press Start on their phone, or click / Space", W/2, H/2 + 22);
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+})();
+</script>
+</body>
+</html>
